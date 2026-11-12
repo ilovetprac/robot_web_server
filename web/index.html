@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Robot Camera — Live View</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #0e1116;
+      color: #e6edf3;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 1rem 1.5rem;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    h1 { font-size: 1.15rem; margin: 0; font-weight: 600; }
+    .status {
+      display: flex; align-items: center; gap: 0.5rem;
+      font-size: 0.85rem; color: #8b949e;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #d29922; }
+    .dot.online { background: #3fb950; }
+    .dot.offline { background: #f85149; }
+    main {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 1.5rem;
+    }
+    .viewer {
+      width: 100%;
+      max-width: 960px;
+      background: #000;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .viewer img { width: 100%; display: block; background: #000; }
+    .bar {
+      display: flex; gap: 0.75rem; flex-wrap: wrap;
+      padding: 0.75rem 1rem; background: #161b22; border-top: 1px solid #30363d;
+      font-size: 0.85rem;
+    }
+    .bar a, .bar button {
+      color: #58a6ff; background: none; border: 1px solid #30363d;
+      padding: 0.35rem 0.7rem; border-radius: 6px; cursor: pointer;
+      text-decoration: none; font-size: 0.85rem;
+    }
+    .bar a:hover, .bar button:hover { border-color: #58a6ff; }
+    footer { padding: 0.75rem 1.5rem; color: #6e7681; font-size: 0.8rem; }
+    code { background: #161b22; padding: 0.1rem 0.35rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🤖 Robot Camera — Live View</h1>
+    <div class="status">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">connecting…</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="viewer">
+      <!-- The browser renders the MJPEG stream directly in an <img>.
+           Each JPEG frame the server pushes replaces the previous one. -->
+      <img id="stream" src="/stream" alt="Live camera stream" />
+      <div class="bar">
+        <a href="/api/snapshot" target="_blank">📷 Snapshot</a>
+        <a href="/api/status" target="_blank">📊 Status (JSON)</a>
+        <a href="/api/info" target="_blank">ℹ️ API Info</a>
+        <button id="reloadBtn">🔄 Reload stream</button>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    Served by <code>robot_web_server</code> (ROS 2 Jazzy + FastAPI).
+    Stream: <code>/stream</code> · REST: <code>/api/*</code>
+  </footer>
+
+  <script>
+    // Poll the REST status endpoint every 2s to show a live health indicator.
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+
+    async function poll() {
+      try {
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        const data = await res.json();
+        if (data.camera_connected) {
+          dot.className = 'dot online';
+          text.textContent = `online · ${data.frames_received} frames`;
+        } else {
+          dot.className = 'dot offline';
+          text.textContent = 'server up, waiting for camera…';
+        }
+      } catch (e) {
+        dot.className = 'dot offline';
+        text.textContent = 'server unreachable';
+      }
+    }
+    poll();
+    setInterval(poll, 2000);
+
+    // Reloading the <img> src forces a fresh stream connection.
+    document.getElementById('reloadBtn').addEventListener('click', () => {
+      const img = document.getElementById('stream');
+      img.src = '/stream?t=' + Date.now();
+    });
+  </script>
+</body>
+</html>

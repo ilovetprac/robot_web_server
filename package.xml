@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_web_server</name>
+  <version>0.1.0</version>
+  <description>
+    A from-scratch web server for a robot that streams a USB camera over
+    HTTP (MJPEG) and exposes a REST API. Built for learning web server
+    architecture, HTTP/REST, and networking on ROS 2 Jazzy.
+  </description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- Build tool for ament_python packages -->
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- Core ROS 2 Python client library -->
+  <exec_depend>rclpy</exec_depend>
+
+  <!-- Standard message types we publish/subscribe -->
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <!-- cv_bridge converts between ROS Image messages and OpenCV images -->
+  <exec_depend>cv_bridge</exec_depend>
+
+  <!-- Python libs used by the camera + web nodes.
+       These resolve to python3-opencv / python3-fastapi etc. via rosdep. -->
+  <exec_depend>python3-opencv</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
