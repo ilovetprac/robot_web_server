@@ -53,10 +53,11 @@ from robot_web_server.web_server import build_app, FrameBuffer  # noqa: E402
 TINY_JPEG = b'\xff\xd8\xff' + b'ROBOT_WEB_SERVER_TEST_FRAME' + b'\xff\xd9'
 
 
+USERNAME = 'tprac'
 PASSWORD = 'tprac@123'
 
 
-def make_client(with_frame=True, password=''):
+def make_client(with_frame=True, username='', password=''):
     fb = FrameBuffer()
     if with_frame:
         fb.update(TINY_JPEG)
@@ -65,7 +66,10 @@ def make_client(with_frame=True, password=''):
         def get_name(self):
             return 'web_server'
 
-    app = build_app(fb, FakeNode(), Path('/nonexistent/web'), password=password)
+    app = build_app(
+        fb, FakeNode(), Path('/nonexistent/web'),
+        username=username, password=password,
+    )
     return TestClient(app), fb
 
 
@@ -130,18 +134,18 @@ def test_stream_is_multipart_mjpeg():
         assert TINY_JPEG in chunk
 
 
-# --- Password protection (HTTP Basic Auth) --------------------------------
+# --- Login protection (HTTP Basic Auth: username + password) --------------
 
 def test_no_password_means_open():
     """With no password configured, all routes are reachable without auth."""
-    client, _ = make_client(with_frame=True, password='')
+    client, _ = make_client(with_frame=True, username='', password='')
     assert client.get('/').status_code == 200
     assert client.get('/api/status').status_code == 200
 
 
 def test_protected_routes_reject_without_credentials():
     """With a password set, requests lacking credentials get 401."""
-    client, _ = make_client(with_frame=True, password=PASSWORD)
+    client, _ = make_client(with_frame=True, username=USERNAME, password=PASSWORD)
     for path in ['/', '/api/status', '/api/snapshot', '/api/info']:
         r = client.get(path)
         assert r.status_code == 401, path
@@ -150,21 +154,28 @@ def test_protected_routes_reject_without_credentials():
 
 
 def test_wrong_password_rejected():
-    client, _ = make_client(with_frame=True, password=PASSWORD)
-    r = client.get('/api/status', auth=('anyuser', 'wrong-password'))
+    client, _ = make_client(with_frame=True, username=USERNAME, password=PASSWORD)
+    r = client.get('/api/status', auth=(USERNAME, 'wrong-password'))
     assert r.status_code == 401
 
 
-def test_correct_password_any_username_allowed():
-    """Any username works; only the password must match."""
-    client, _ = make_client(with_frame=True, password=PASSWORD)
-    r = client.get('/api/status', auth=('whatever', PASSWORD))
+def test_wrong_username_rejected():
+    """Correct password but wrong username must be rejected."""
+    client, _ = make_client(with_frame=True, username=USERNAME, password=PASSWORD)
+    r = client.get('/api/status', auth=('not-tprac', PASSWORD))
+    assert r.status_code == 401
+
+
+def test_correct_username_and_password_allowed():
+    """Only the exact username AND password unlock access."""
+    client, _ = make_client(with_frame=True, username=USERNAME, password=PASSWORD)
+    r = client.get('/api/status', auth=(USERNAME, PASSWORD))
     assert r.status_code == 200
     assert r.json()['camera_connected'] is True
 
 
-def test_correct_password_unlocks_stream():
-    client, _ = make_client(with_frame=True, password=PASSWORD)
-    with client.stream('GET', '/stream', auth=('x', PASSWORD)) as r:
+def test_correct_credentials_unlock_stream():
+    client, _ = make_client(with_frame=True, username=USERNAME, password=PASSWORD)
+    with client.stream('GET', '/stream', auth=(USERNAME, PASSWORD)) as r:
         assert r.status_code == 200
         assert 'multipart/x-mixed-replace' in r.headers['content-type']

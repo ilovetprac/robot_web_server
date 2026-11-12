@@ -126,6 +126,7 @@ def build_app(
     frame_buffer: FrameBuffer,
     node: Node,
     web_dir: Path,
+    username: str = '',
     password: str = '',
 ) -> FastAPI:
     app = FastAPI(title='Robot Web Server', version='0.1.0')
@@ -136,9 +137,9 @@ def build_app(
     # ------------------------------------------------------------------
     # Password protection (HTTP Basic Auth).
     #
-    # The browser shows a native login popup. We check ONLY the password,
-    # so the user can type anything as the username. If `password` is empty
-    # (the default), auth is disabled and the server is open.
+    # The browser shows a native login popup. The viewer must enter BOTH the
+    # correct username AND the correct password. If `password` is empty
+    # (the default for that param), auth is disabled and the server is open.
     #
     # Basic Auth sends credentials base64-encoded (not encrypted), so it is
     # only truly private over HTTPS. Your public access via the Cloudflare
@@ -146,24 +147,29 @@ def build_app(
     # ------------------------------------------------------------------
     basic = HTTPBasic(auto_error=False)
 
-    def require_password(
+    def require_login(
         creds: HTTPBasicCredentials = Depends(basic),
     ):
         # No password configured -> auth disabled, allow everyone.
         if not password:
             return
         # Reject if no credentials were supplied at all.
-        # secrets.compare_digest avoids leaking timing information.
-        supplied = creds.password if creds is not None else ''
-        if not secrets.compare_digest(supplied, password):
+        supplied_user = creds.username if creds is not None else ''
+        supplied_pass = creds.password if creds is not None else ''
+        # secrets.compare_digest avoids leaking timing information. Both the
+        # username and the password must match. We AND the two checks (and
+        # evaluate both, rather than short-circuiting) to keep timing uniform.
+        user_ok = secrets.compare_digest(supplied_user, username)
+        pass_ok = secrets.compare_digest(supplied_pass, password)
+        if not (user_ok and pass_ok):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail='Incorrect password',
+                detail='Incorrect username or password',
                 headers={'WWW-Authenticate': 'Basic'},
             )
 
     @app.get('/', response_class=HTMLResponse)
-    async def index(_=Depends(require_password)):
+    async def index(_=Depends(require_login)):
         """Serve the landing page with the embedded live view."""
         index_file = web_dir / 'index.html'
         if index_file.exists():
@@ -193,7 +199,7 @@ def build_app(
             await asyncio.sleep(1.0 / 30.0)
 
     @app.get('/stream')
-    async def stream(_=Depends(require_password)):
+    async def stream(_=Depends(require_login)):
         """MJPEG stream endpoint. Point an <img> tag at this URL."""
         return StreamingResponse(
             mjpeg_generator(),
@@ -201,7 +207,7 @@ def build_app(
         )
 
     @app.get('/api/snapshot')
-    async def snapshot(_=Depends(require_password)):
+    async def snapshot(_=Depends(require_login)):
         """Return the single most recent frame as a JPEG (REST resource)."""
         jpeg = frame_buffer.get_jpeg()
         if jpeg is None:
@@ -212,7 +218,7 @@ def build_app(
         return Response(content=jpeg, media_type='image/jpeg')
 
     @app.get('/api/status')
-    async def status_endpoint(_=Depends(require_password)):
+    async def status_endpoint(_=Depends(require_login)):
         """Health/status as JSON. This is a REST endpoint returning resource state."""
         stats = frame_buffer.stats()
         return {
@@ -225,7 +231,7 @@ def build_app(
         }
 
     @app.get('/api/info')
-    async def info(_=Depends(require_password)):
+    async def info(_=Depends(require_login)):
         """Self-describing list of endpoints (handy for REST discovery/learning)."""
         return {
             'endpoints': {
@@ -249,11 +255,14 @@ def main(args=None):
     # Read web server params (host/port/password) from the node's parameters.
     node.declare_parameter('host', '0.0.0.0')
     node.declare_parameter('port', 8080)
-    # Shared password required to view the site. Set to '' to disable auth.
-    # Override at launch:  --ros-args -p password:='my-secret'
+    # Username + password required to view the site. Viewers must enter BOTH.
+    # Set password to '' to disable auth entirely.
+    # Override at launch:  --ros-args -p username:='tprac' -p password:='my-secret'
+    node.declare_parameter('username', 'tprac')
     node.declare_parameter('password', 'tprac@123')
     host = node.get_parameter('host').value
     port = int(node.get_parameter('port').value)
+    username = node.get_parameter('username').value
     password = node.get_parameter('password').value
 
     # Locate installed static web assets.
@@ -262,7 +271,7 @@ def main(args=None):
     except Exception:
         web_dir = Path(__file__).resolve().parent.parent / 'web'
 
-    app = build_app(frame_buffer, node, web_dir, password=password)
+    app = build_app(frame_buffer, node, web_dir, username=username, password=password)
 
     # ------------------------------------------------------------------
     # Run ROS spinning on a background thread so the main thread can run
@@ -281,9 +290,11 @@ def main(args=None):
     node.get_logger().info(f'  Local view:  http://localhost:{port}/')
     node.get_logger().info(f'  LAN view:    http://<this-pc-ip>:{port}/')
     if password:
-        node.get_logger().info('  Password protection: ENABLED (Basic Auth)')
+        node.get_logger().info(
+            f'  Login protection: ENABLED (Basic Auth, username "{username}")'
+        )
     else:
-        node.get_logger().warn('  Password protection: DISABLED (open to anyone)')
+        node.get_logger().warn('  Login protection: DISABLED (open to anyone)')
 
     config = uvicorn.Config(app, host=host, port=port, log_level='info')
     server = uvicorn.Server(config)

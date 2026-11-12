@@ -27,6 +27,7 @@ def generate_launch_description():
     host = LaunchConfiguration('host')
     port = LaunchConfiguration('port')
     topic = LaunchConfiguration('topic')
+    username = LaunchConfiguration('username')
     password = LaunchConfiguration('password')
 
     return LaunchDescription([
@@ -39,8 +40,10 @@ def generate_launch_description():
                               description='Bind address; 0.0.0.0 = all interfaces'),
         DeclareLaunchArgument('port', default_value='8080'),
         DeclareLaunchArgument('topic', default_value='/camera/image_raw'),
+        DeclareLaunchArgument('username', default_value='tprac',
+                              description='Username required to view the site'),
         DeclareLaunchArgument('password', default_value='tprac@123',
-                              description="Shared password to view the site; "
+                              description="Password required to view the site; "
                                           "set to '' to disable auth"),
 
         Node(
@@ -66,6 +69,7 @@ def generate_launch_description():
                 'host': host,
                 'port': port,
                 'topic': topic,
+                'username': username,
                 'password': password,
             }],
         ),

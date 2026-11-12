@@ -255,21 +255,24 @@ Option C only if you specifically need to run your own DNS/port setup.
 
 ---
 
-## 7. Password protection (built in)
+## 7. Login protection (built in)
 
 The web server has HTTP Basic Auth built in and **enabled by default**. When a
-password is set, every route (page, stream, snapshot, API) requires it — the
-browser shows a native login popup. Only the **password** is checked, so the
-user can type anything as the username.
+password is set, every route (page, stream, snapshot, API) requires login — the
+browser shows a native popup, and the viewer must enter **both** the correct
+username **and** the correct password.
 
-Default password: `tprac@123`. Change it at launch (no code edit needed):
+Defaults: username `tprac`, password `tprac@123`. Change them at launch (no
+code edit needed):
 
 ```bash
-# set your own password
-ros2 launch robot_web_server robot_web_server.launch.py password:='my-secret'
+# set your own username + password
+ros2 launch robot_web_server robot_web_server.launch.py \
+    username:='tprac' password:='my-secret'
 
 # or on the web_server node directly
-ros2 run robot_web_server web_server --ros-args -p password:='my-secret'
+ros2 run robot_web_server web_server --ros-args \
+    -p username:='tprac' -p password:='my-secret'
 
 # disable auth entirely (open to anyone) — only safe on a trusted LAN
 ros2 launch robot_web_server robot_web_server.launch.py password:=''
