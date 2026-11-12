@@ -53,7 +53,10 @@ from robot_web_server.web_server import build_app, FrameBuffer  # noqa: E402
 TINY_JPEG = b'\xff\xd8\xff' + b'ROBOT_WEB_SERVER_TEST_FRAME' + b'\xff\xd9'
 
 
-def make_client(with_frame=True):
+PASSWORD = 'tprac@123'
+
+
+def make_client(with_frame=True, password=''):
     fb = FrameBuffer()
     if with_frame:
         fb.update(TINY_JPEG)
@@ -62,7 +65,7 @@ def make_client(with_frame=True):
         def get_name(self):
             return 'web_server'
 
-    app = build_app(fb, FakeNode(), Path('/nonexistent/web'))
+    app = build_app(fb, FakeNode(), Path('/nonexistent/web'), password=password)
     return TestClient(app), fb
 
 
@@ -125,3 +128,43 @@ def test_stream_is_multipart_mjpeg():
         assert b'--frame' in chunk
         assert b'Content-Type: image/jpeg' in chunk
         assert TINY_JPEG in chunk
+
+
+# --- Password protection (HTTP Basic Auth) --------------------------------
+
+def test_no_password_means_open():
+    """With no password configured, all routes are reachable without auth."""
+    client, _ = make_client(with_frame=True, password='')
+    assert client.get('/').status_code == 200
+    assert client.get('/api/status').status_code == 200
+
+
+def test_protected_routes_reject_without_credentials():
+    """With a password set, requests lacking credentials get 401."""
+    client, _ = make_client(with_frame=True, password=PASSWORD)
+    for path in ['/', '/api/status', '/api/snapshot', '/api/info']:
+        r = client.get(path)
+        assert r.status_code == 401, path
+        # The WWW-Authenticate header makes the browser show the login popup.
+        assert r.headers.get('www-authenticate') == 'Basic', path
+
+
+def test_wrong_password_rejected():
+    client, _ = make_client(with_frame=True, password=PASSWORD)
+    r = client.get('/api/status', auth=('anyuser', 'wrong-password'))
+    assert r.status_code == 401
+
+
+def test_correct_password_any_username_allowed():
+    """Any username works; only the password must match."""
+    client, _ = make_client(with_frame=True, password=PASSWORD)
+    r = client.get('/api/status', auth=('whatever', PASSWORD))
+    assert r.status_code == 200
+    assert r.json()['camera_connected'] is True
+
+
+def test_correct_password_unlocks_stream():
+    client, _ = make_client(with_frame=True, password=PASSWORD)
+    with client.stream('GET', '/stream', auth=('x', PASSWORD)) as r:
+        assert r.status_code == 200
+        assert 'multipart/x-mixed-replace' in r.headers['content-type']

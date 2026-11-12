@@ -255,30 +255,35 @@ Option C only if you specifically need to run your own DNS/port setup.
 
 ---
 
-## 7. Securing it before you expose it
+## 7. Password protection (built in)
 
-At minimum, add HTTP Basic Auth. In `web_server.py` you can gate the routes
-with a FastAPI dependency:
+The web server has HTTP Basic Auth built in and **enabled by default**. When a
+password is set, every route (page, stream, snapshot, API) requires it — the
+browser shows a native login popup. Only the **password** is checked, so the
+user can type anything as the username.
 
-```python
-import secrets
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+Default password: `tprac@123`. Change it at launch (no code edit needed):
 
-security = HTTPBasic()
+```bash
+# set your own password
+ros2 launch robot_web_server robot_web_server.launch.py password:='my-secret'
 
-def check_auth(creds: HTTPBasicCredentials = Depends(security)):
-    user_ok = secrets.compare_digest(creds.username, "admin")
-    pass_ok = secrets.compare_digest(creds.password, "change-me")
-    if not (user_ok and pass_ok):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
-                            headers={"WWW-Authenticate": "Basic"})
+# or on the web_server node directly
+ros2 run robot_web_server web_server --ros-args -p password:='my-secret'
 
-# then add `, _=Depends(check_auth)` to each route you want protected.
+# disable auth entirely (open to anyone) — only safe on a trusted LAN
+ros2 launch robot_web_server robot_web_server.launch.py password:=''
 ```
 
-For anything serious: use a real identity provider or put Cloudflare Access in
-front of the tunnel (free, adds a login page without any code).
+> **HTTPS matters.** Basic Auth sends the password base64-encoded, *not*
+> encrypted. Over plain `http://` on your LAN that's fine for casual use, but
+> anyone sniffing the network could read it. When you expose the feed publicly
+> via the **Cloudflare Tunnel** (§6 Option A), the connection is HTTPS, so the
+> password is protected in transit. Always use the HTTPS tunnel URL for remote
+> access, never a raw public `http://` port.
+
+For stronger protection (per-user logins, no shared password), put **Cloudflare
+Access** in front of the tunnel — a free login page with zero extra code.
 
 ---
 

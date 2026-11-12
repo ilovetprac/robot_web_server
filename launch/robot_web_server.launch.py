@@ -27,6 +27,7 @@ def generate_launch_description():
     host = LaunchConfiguration('host')
     port = LaunchConfiguration('port')
     topic = LaunchConfiguration('topic')
+    password = LaunchConfiguration('password')
 
     return LaunchDescription([
         DeclareLaunchArgument('device_id', default_value='0',
@@ -38,6 +39,9 @@ def generate_launch_description():
                               description='Bind address; 0.0.0.0 = all interfaces'),
         DeclareLaunchArgument('port', default_value='8080'),
         DeclareLaunchArgument('topic', default_value='/camera/image_raw'),
+        DeclareLaunchArgument('password', default_value='tprac@123',
+                              description="Shared password to view the site; "
+                                          "set to '' to disable auth"),
 
         Node(
             package='robot_web_server',
@@ -62,6 +66,7 @@ def generate_launch_description():
                 'host': host,
                 'port': port,
                 'topic': topic,
+                'password': password,
             }],
         ),
     ])

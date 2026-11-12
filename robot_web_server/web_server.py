@@ -32,6 +32,7 @@ Run it with:
 """
 
 import asyncio
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -44,8 +45,9 @@ from cv_bridge import CvBridge
 import cv2
 from ament_index_python.packages import get_package_share_directory
 
-from fastapi import FastAPI, Response
+from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import uvicorn
 
 
@@ -120,14 +122,48 @@ class WebServerNode(Node):
 # --------------------------------------------------------------------------
 # FastAPI application factory
 # --------------------------------------------------------------------------
-def build_app(frame_buffer: FrameBuffer, node: Node, web_dir: Path) -> FastAPI:
+def build_app(
+    frame_buffer: FrameBuffer,
+    node: Node,
+    web_dir: Path,
+    password: str = '',
+) -> FastAPI:
     app = FastAPI(title='Robot Web Server', version='0.1.0')
 
     # MJPEG uses a boundary string to separate frames in one HTTP response.
     BOUNDARY = 'frame'
 
+    # ------------------------------------------------------------------
+    # Password protection (HTTP Basic Auth).
+    #
+    # The browser shows a native login popup. We check ONLY the password,
+    # so the user can type anything as the username. If `password` is empty
+    # (the default), auth is disabled and the server is open.
+    #
+    # Basic Auth sends credentials base64-encoded (not encrypted), so it is
+    # only truly private over HTTPS. Your public access via the Cloudflare
+    # Tunnel is HTTPS, so this is safe there.
+    # ------------------------------------------------------------------
+    basic = HTTPBasic(auto_error=False)
+
+    def require_password(
+        creds: HTTPBasicCredentials = Depends(basic),
+    ):
+        # No password configured -> auth disabled, allow everyone.
+        if not password:
+            return
+        # Reject if no credentials were supplied at all.
+        # secrets.compare_digest avoids leaking timing information.
+        supplied = creds.password if creds is not None else ''
+        if not secrets.compare_digest(supplied, password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='Incorrect password',
+                headers={'WWW-Authenticate': 'Basic'},
+            )
+
     @app.get('/', response_class=HTMLResponse)
-    async def index():
+    async def index(_=Depends(require_password)):
         """Serve the landing page with the embedded live view."""
         index_file = web_dir / 'index.html'
         if index_file.exists():
@@ -157,7 +193,7 @@ def build_app(frame_buffer: FrameBuffer, node: Node, web_dir: Path) -> FastAPI:
             await asyncio.sleep(1.0 / 30.0)
 
     @app.get('/stream')
-    async def stream():
+    async def stream(_=Depends(require_password)):
         """MJPEG stream endpoint. Point an <img> tag at this URL."""
         return StreamingResponse(
             mjpeg_generator(),
@@ -165,7 +201,7 @@ def build_app(frame_buffer: FrameBuffer, node: Node, web_dir: Path) -> FastAPI:
         )
 
     @app.get('/api/snapshot')
-    async def snapshot():
+    async def snapshot(_=Depends(require_password)):
         """Return the single most recent frame as a JPEG (REST resource)."""
         jpeg = frame_buffer.get_jpeg()
         if jpeg is None:
@@ -176,7 +212,7 @@ def build_app(frame_buffer: FrameBuffer, node: Node, web_dir: Path) -> FastAPI:
         return Response(content=jpeg, media_type='image/jpeg')
 
     @app.get('/api/status')
-    async def status():
+    async def status_endpoint(_=Depends(require_password)):
         """Health/status as JSON. This is a REST endpoint returning resource state."""
         stats = frame_buffer.stats()
         return {
@@ -189,7 +225,7 @@ def build_app(frame_buffer: FrameBuffer, node: Node, web_dir: Path) -> FastAPI:
         }
 
     @app.get('/api/info')
-    async def info():
+    async def info(_=Depends(require_password)):
         """Self-describing list of endpoints (handy for REST discovery/learning)."""
         return {
             'endpoints': {
@@ -210,11 +246,15 @@ def main(args=None):
     frame_buffer = FrameBuffer()
     node = WebServerNode(frame_buffer)
 
-    # Read web server params (host/port) from the node's parameters.
+    # Read web server params (host/port/password) from the node's parameters.
     node.declare_parameter('host', '0.0.0.0')
     node.declare_parameter('port', 8080)
+    # Shared password required to view the site. Set to '' to disable auth.
+    # Override at launch:  --ros-args -p password:='my-secret'
+    node.declare_parameter('password', 'tprac@123')
     host = node.get_parameter('host').value
     port = int(node.get_parameter('port').value)
+    password = node.get_parameter('password').value
 
     # Locate installed static web assets.
     try:
@@ -222,7 +262,7 @@ def main(args=None):
     except Exception:
         web_dir = Path(__file__).resolve().parent.parent / 'web'
 
-    app = build_app(frame_buffer, node, web_dir)
+    app = build_app(frame_buffer, node, web_dir, password=password)
 
     # ------------------------------------------------------------------
     # Run ROS spinning on a background thread so the main thread can run
@@ -240,6 +280,10 @@ def main(args=None):
     node.get_logger().info(f'Starting web server on http://{host}:{port}')
     node.get_logger().info(f'  Local view:  http://localhost:{port}/')
     node.get_logger().info(f'  LAN view:    http://<this-pc-ip>:{port}/')
+    if password:
+        node.get_logger().info('  Password protection: ENABLED (Basic Auth)')
+    else:
+        node.get_logger().warn('  Password protection: DISABLED (open to anyone)')
 
     config = uvicorn.Config(app, host=host, port=port, log_level='info')
     server = uvicorn.Server(config)
