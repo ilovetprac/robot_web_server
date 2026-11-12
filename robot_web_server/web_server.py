@@ -32,6 +32,7 @@ Run it with:
 """
 
 import asyncio
+import json
 import secrets
 import threading
 import time
@@ -45,7 +46,7 @@ from cv_bridge import CvBridge
 import cv2
 from ament_index_python.packages import get_package_share_directory
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import uvicorn
@@ -122,12 +123,123 @@ class WebServerNode(Node):
 # --------------------------------------------------------------------------
 # FastAPI application factory
 # --------------------------------------------------------------------------
+class LoginGuard:
+    """Brute-force protection: permanently block an IP after N failed logins.
+
+    HOW IT WORKS:
+      * Every failed login increments a counter for that client's IP.
+      * When the count reaches `max_attempts`, the IP is added to a blocklist
+        and ALL future requests from it are rejected with 429 -- even if they
+        later supply the correct password.
+      * The blocklist is written to a JSON file on disk, so the ban survives
+        server restarts (that's what makes it "permanent"). To un-ban an IP,
+        clear it from that file (see `unblock`) and restart, or delete the file.
+      * A successful login resets that IP's failure counter (so an occasional
+        typo doesn't slowly accumulate toward a ban).
+
+    IP BEHIND THE TUNNEL:
+      Traffic through the Cloudflare Tunnel arrives from 127.0.0.1 (the tunnel
+      itself). Cloudflare puts the real visitor IP in the `CF-Connecting-IP`
+      header. When `trust_proxy_header` is True we use that header; otherwise
+      we use the raw socket IP (correct for direct LAN access). If every
+      visitor looked like one IP, a single attacker could lock out everyone --
+      reading the real IP prevents that.
+    """
+
+    def __init__(self, max_attempts: int, blocklist_file: Path,
+                 trust_proxy_header: bool = True, logger=None):
+        self.max_attempts = max_attempts
+        self.blocklist_file = Path(blocklist_file)
+        self.trust_proxy_header = trust_proxy_header
+        self._logger = logger
+        self._lock = threading.Lock()
+        self._failures = {}            # ip -> consecutive failure count
+        self._blocked = self._load_blocklist()  # set of permanently-blocked IPs
+
+    # --- persistence -------------------------------------------------------
+    def _load_blocklist(self) -> set:
+        try:
+            if self.blocklist_file.exists():
+                data = json.loads(self.blocklist_file.read_text(encoding='utf-8'))
+                return set(data.get('blocked', []))
+        except Exception as exc:  # noqa: BLE001  (corrupt file -> start empty)
+            if self._logger:
+                self._logger.warn(f'Could not read blocklist: {exc}')
+        return set()
+
+    def _save_blocklist(self):
+        try:
+            self.blocklist_file.parent.mkdir(parents=True, exist_ok=True)
+            self.blocklist_file.write_text(
+                json.dumps({'blocked': sorted(self._blocked)}, indent=2),
+                encoding='utf-8',
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self._logger:
+                self._logger.warn(f'Could not write blocklist: {exc}')
+
+    # --- IP extraction -----------------------------------------------------
+    def client_ip(self, request: Request) -> str:
+        if self.trust_proxy_header:
+            # Cloudflare sets CF-Connecting-IP to the true client IP.
+            cf_ip = request.headers.get('cf-connecting-ip')
+            if cf_ip:
+                return cf_ip.strip()
+            # Generic reverse-proxy header; take the first (original) hop.
+            xff = request.headers.get('x-forwarded-for')
+            if xff:
+                return xff.split(',')[0].strip()
+        return request.client.host if request.client else 'unknown'
+
+    # --- decisions ---------------------------------------------------------
+    def is_blocked(self, ip: str) -> bool:
+        with self._lock:
+            return ip in self._blocked
+
+    def record_failure(self, ip: str) -> bool:
+        """Count a failed attempt. Returns True if this IP is now blocked."""
+        with self._lock:
+            if ip in self._blocked:
+                return True
+            self._failures[ip] = self._failures.get(ip, 0) + 1
+            if self._failures[ip] >= self.max_attempts:
+                self._blocked.add(ip)
+                self._save_blocklist()
+                if self._logger:
+                    self._logger.warn(
+                        f'IP {ip} permanently blocked after '
+                        f'{self._failures[ip]} failed login attempts.'
+                    )
+                return True
+            if self._logger:
+                remaining = self.max_attempts - self._failures[ip]
+                self._logger.warn(
+                    f'Failed login from {ip} '
+                    f'({self._failures[ip]}/{self.max_attempts}); '
+                    f'{remaining} attempt(s) before permanent block.'
+                )
+            return False
+
+    def record_success(self, ip: str):
+        """A correct login clears that IP's failure counter."""
+        with self._lock:
+            self._failures.pop(ip, None)
+
+    def unblock(self, ip: str):
+        """Manually remove an IP from the blocklist (recovery helper)."""
+        with self._lock:
+            self._blocked.discard(ip)
+            self._failures.pop(ip, None)
+            self._save_blocklist()
+
+
 def build_app(
     frame_buffer: FrameBuffer,
     node: Node,
     web_dir: Path,
     username: str = '',
     password: str = '',
+    guard: 'LoginGuard | None' = None,
 ) -> FastAPI:
     app = FastAPI(title='Robot Web Server', version='0.1.0')
 
@@ -148,25 +260,60 @@ def build_app(
     basic = HTTPBasic(auto_error=False)
 
     def require_login(
+        request: Request,
         creds: HTTPBasicCredentials = Depends(basic),
     ):
         # No password configured -> auth disabled, allow everyone.
         if not password:
             return
-        # Reject if no credentials were supplied at all.
-        supplied_user = creds.username if creds is not None else ''
-        supplied_pass = creds.password if creds is not None else ''
+
+        ip = guard.client_ip(request) if guard else 'unknown'
+
+        # 1) If this IP is already permanently blocked, reject outright --
+        #    even correct credentials cannot get in. 429 = Too Many Requests.
+        if guard and guard.is_blocked(ip):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail='Too many failed login attempts; this address is blocked.',
+            )
+
+        # 2) If NO credentials were supplied, this is just the browser's first
+        #    request -- respond 401 so it shows the login popup. We do NOT
+        #    count this as a failed attempt (otherwise simply opening the page
+        #    would burn attempts and could block a legitimate user instantly).
+        if creds is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='Authentication required',
+                headers={'WWW-Authenticate': 'Basic'},
+            )
+
+        # 3) Credentials WERE supplied -> verify them.
         # secrets.compare_digest avoids leaking timing information. Both the
         # username and the password must match. We AND the two checks (and
         # evaluate both, rather than short-circuiting) to keep timing uniform.
-        user_ok = secrets.compare_digest(supplied_user, username)
-        pass_ok = secrets.compare_digest(supplied_pass, password)
-        if not (user_ok and pass_ok):
+        user_ok = secrets.compare_digest(creds.username, username)
+        pass_ok = secrets.compare_digest(creds.password, password)
+
+        if user_ok and pass_ok:
+            # Correct login -> clear this IP's failure counter.
+            if guard:
+                guard.record_success(ip)
+            return
+
+        # 4) Wrong credentials -> count the failure. If that trips the limit,
+        #    the IP is now blocked; tell them so with a 429, else a 401.
+        now_blocked = guard.record_failure(ip) if guard else False
+        if now_blocked:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail='Incorrect username or password',
-                headers={'WWW-Authenticate': 'Basic'},
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail='Too many failed login attempts; this address is blocked.',
             )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Incorrect username or password',
+            headers={'WWW-Authenticate': 'Basic'},
+        )
 
     @app.get('/', response_class=HTMLResponse)
     async def index(_=Depends(require_login)):
@@ -260,10 +407,23 @@ def main(args=None):
     # Override at launch:  --ros-args -p username:='tprac' -p password:='my-secret'
     node.declare_parameter('username', 'tprac')
     node.declare_parameter('password', 'tprac@123')
+    # Brute-force protection: permanently block an IP after this many failed
+    # logins. Default 2. The block persists in `blocklist_file`.
+    node.declare_parameter('max_attempts', 2)
+    node.declare_parameter(
+        'blocklist_file',
+        str(Path.home() / '.robot_web_server_blocklist.json'),
+    )
+    # Trust Cloudflare/proxy headers for the real client IP. Keep True when
+    # behind the Cloudflare Tunnel; set False for direct LAN-only access.
+    node.declare_parameter('trust_proxy_header', True)
     host = node.get_parameter('host').value
     port = int(node.get_parameter('port').value)
     username = node.get_parameter('username').value
     password = node.get_parameter('password').value
+    max_attempts = int(node.get_parameter('max_attempts').value)
+    blocklist_file = node.get_parameter('blocklist_file').value
+    trust_proxy_header = bool(node.get_parameter('trust_proxy_header').value)
 
     # Locate installed static web assets.
     try:
@@ -271,7 +431,17 @@ def main(args=None):
     except Exception:
         web_dir = Path(__file__).resolve().parent.parent / 'web'
 
-    app = build_app(frame_buffer, node, web_dir, username=username, password=password)
+    guard = LoginGuard(
+        max_attempts=max_attempts,
+        blocklist_file=blocklist_file,
+        trust_proxy_header=trust_proxy_header,
+        logger=node.get_logger(),
+    )
+
+    app = build_app(
+        frame_buffer, node, web_dir,
+        username=username, password=password, guard=guard,
+    )
 
     # ------------------------------------------------------------------
     # Run ROS spinning on a background thread so the main thread can run
@@ -293,6 +463,15 @@ def main(args=None):
         node.get_logger().info(
             f'  Login protection: ENABLED (Basic Auth, username "{username}")'
         )
+        node.get_logger().info(
+            f'  Brute-force block: after {max_attempts} failed attempts per IP '
+            f'(blocklist: {blocklist_file})'
+        )
+        if guard._blocked:
+            node.get_logger().info(
+                f'  Currently blocked IPs: {len(guard._blocked)} '
+                '(clear the blocklist file to reset)'
+            )
     else:
         node.get_logger().warn('  Login protection: DISABLED (open to anyone)')
 

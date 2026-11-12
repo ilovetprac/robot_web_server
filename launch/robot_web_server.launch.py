@@ -30,6 +30,7 @@ def generate_launch_description():
     topic = LaunchConfiguration('topic')
     username = LaunchConfiguration('username')
     password = LaunchConfiguration('password')
+    max_attempts = LaunchConfiguration('max_attempts')
     jpeg_quality = LaunchConfiguration('jpeg_quality')
 
     return LaunchDescription([
@@ -53,6 +54,9 @@ def generate_launch_description():
         DeclareLaunchArgument('password', default_value='tprac@123',
                               description="Password required to view the site; "
                                           "set to '' to disable auth"),
+        DeclareLaunchArgument('max_attempts', default_value='2',
+                              description='Permanently block an IP after this '
+                                          'many failed login attempts'),
 
         Node(
             package='robot_web_server',
@@ -80,6 +84,7 @@ def generate_launch_description():
                 'topic': topic,
                 'username': username,
                 'password': password,
+                'max_attempts': max_attempts,
                 'jpeg_quality': jpeg_quality,
             }],
         ),

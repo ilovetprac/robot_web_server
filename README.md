@@ -319,6 +319,33 @@ ros2 launch robot_web_server robot_web_server.launch.py password:=''
 For stronger protection (per-user logins, no shared password), put **Cloudflare
 Access** in front of the tunnel — a free login page with zero extra code.
 
+### Brute-force protection (permanent IP block)
+
+To stop password-guessing, an IP that submits too many **wrong** passwords is
+**permanently blocked** — after that, every request from it gets `429 Too Many
+Requests`, even with the correct password.
+
+- Default limit: **2** wrong attempts. Change it with `max_attempts`:
+  ```bash
+  ros2 launch robot_web_server robot_web_server.launch.py max_attempts:=3
+  ```
+- Only *wrong* credentials count. Simply opening the page (no credentials yet)
+  does **not** burn an attempt, so a normal visitor is never blocked before
+  they see the login box. A correct login resets that IP's counter.
+- The block is saved to a file (`~/.robot_web_server_blocklist.json`) so it
+  **survives restarts**. Behind the Cloudflare Tunnel, the real visitor IP is
+  read from the `CF-Connecting-IP` header (not the tunnel's localhost address),
+  so one attacker can't lock out everyone.
+
+**If you lock yourself out**, clear the block with the recovery script, then
+restart the server:
+
+```bash
+python3 scripts/unblock_ip.py --list        # see who's blocked
+python3 scripts/unblock_ip.py 203.0.113.7   # unblock one IP
+python3 scripts/unblock_ip.py --all         # clear everything
+```
+
 ---
 
 ## 8. Troubleshooting
