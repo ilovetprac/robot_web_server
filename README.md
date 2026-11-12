@@ -112,6 +112,37 @@ ros2 topic list
 ros2 topic hz /camera/image_raw      # confirms frames are flowing
 ```
 
+### Resolution & frame rate
+
+Set these at launch (defaults: `1280x720 @ 30 fps`, format `MJPG`):
+
+```bash
+ros2 launch robot_web_server robot_web_server.launch.py \
+    frame_width:=1280 frame_height:=720 fps:=30.0 pixel_format:=MJPG
+```
+
+**First, check what your camera actually supports:**
+
+```bash
+v4l2-ctl --device=/dev/video0 --list-formats-ext
+```
+
+**Use `MJPG`, not `YUYV`, for anything above 640x480.** Most USB webcams only
+reach high resolution/fps in their on-camera-compressed `MJPG` mode; the
+uncompressed `YUYV` mode is capped to low fps at high res (e.g. 1080p may be
+5 fps in YUYV but 30 fps in MJPG). The camera node defaults to `MJPG` and
+prints the format it actually selected on startup.
+
+Tuning tips:
+- **Smooth remote viewing (over the tunnel) is usually bandwidth-limited.**
+  720p@30 is a good sweet spot; drop `jpeg_quality` before dropping resolution:
+  ```bash
+  ros2 launch robot_web_server robot_web_server.launch.py jpeg_quality:=60
+  ```
+- **High CPU / dropped frames** → lower `fps`, resolution, or `jpeg_quality`.
+- If the startup log warns the camera gave a different size than requested,
+  that combo isn't supported — pick one from `--list-formats-ext`.
+
 ---
 
 ## 4. Viewing from another device on your LAN

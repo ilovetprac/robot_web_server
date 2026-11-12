@@ -43,12 +43,18 @@ class CameraPublisher(Node):
         self.declare_parameter('frame_height', 480)
         self.declare_parameter('fps', 15.0)
         self.declare_parameter('topic', '/camera/image_raw')
+        # Camera capture format (FOURCC). 'MJPG' lets the camera compress on
+        # board, which is REQUIRED for high resolution/fps on most USB webcams
+        # (uncompressed 'YUYV' is capped to low fps at high res). Use 'MJPG'
+        # for anything above 640x480. Leave '' to let the driver choose.
+        self.declare_parameter('pixel_format', 'MJPG')
 
         device_id = self.get_parameter('device_id').value
         width = self.get_parameter('frame_width').value
         height = self.get_parameter('frame_height').value
         fps = self.get_parameter('fps').value
         topic = self.get_parameter('topic').value
+        pixel_format = self.get_parameter('pixel_format').value
 
         # ------------------------------------------------------------------
         # Open the camera. On Linux, OpenCV's V4L2 backend talks to
@@ -64,6 +70,14 @@ class CameraPublisher(Node):
             )
             raise RuntimeError('Camera open failed')
 
+        # IMPORTANT: set the capture format (FOURCC) BEFORE resolution/fps.
+        # V4L2 only honors a high-res/high-fps request if the pixel format
+        # supports it. 'MJPG' = on-camera JPEG compression (fast, high res);
+        # 'YUYV' = raw (limited to low fps at high res on this camera).
+        if pixel_format:
+            fourcc = cv2.VideoWriter_fourcc(*pixel_format)
+            self.cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+
         # Request a resolution. The camera may pick the closest it supports.
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -71,7 +85,21 @@ class CameraPublisher(Node):
 
         actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.get_logger().info(f'Camera opened at {actual_w}x{actual_h}')
+        actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        # Read back the format the driver actually selected (decode FOURCC int).
+        fourcc_int = int(self.cap.get(cv2.CAP_PROP_FOURCC))
+        actual_fmt = ''.join(
+            [chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4)]
+        ).strip()
+        self.get_logger().info(
+            f'Camera opened at {actual_w}x{actual_h} @ ~{actual_fps:.0f} fps '
+            f'(format: {actual_fmt or "unknown"})'
+        )
+        if actual_w != width or actual_h != height:
+            self.get_logger().warn(
+                f'Requested {width}x{height} but camera gave {actual_w}x{actual_h}. '
+                'Check `v4l2-ctl --list-formats-ext` for supported combos.'
+            )
 
         # cv_bridge converts OpenCV numpy images <-> ROS Image messages.
         self.bridge = CvBridge()

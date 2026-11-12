@@ -24,22 +24,30 @@ def generate_launch_description():
     width = LaunchConfiguration('frame_width')
     height = LaunchConfiguration('frame_height')
     fps = LaunchConfiguration('fps')
+    pixel_format = LaunchConfiguration('pixel_format')
     host = LaunchConfiguration('host')
     port = LaunchConfiguration('port')
     topic = LaunchConfiguration('topic')
     username = LaunchConfiguration('username')
     password = LaunchConfiguration('password')
+    jpeg_quality = LaunchConfiguration('jpeg_quality')
 
     return LaunchDescription([
         DeclareLaunchArgument('device_id', default_value='0',
                               description='USB camera index (/dev/videoN)'),
-        DeclareLaunchArgument('frame_width', default_value='640'),
-        DeclareLaunchArgument('frame_height', default_value='480'),
-        DeclareLaunchArgument('fps', default_value='15.0'),
+        DeclareLaunchArgument('frame_width', default_value='1280'),
+        DeclareLaunchArgument('frame_height', default_value='720'),
+        DeclareLaunchArgument('fps', default_value='30.0'),
+        DeclareLaunchArgument('pixel_format', default_value='MJPG',
+                              description="Camera capture format; 'MJPG' is "
+                                          "required for high res/fps"),
         DeclareLaunchArgument('host', default_value='0.0.0.0',
                               description='Bind address; 0.0.0.0 = all interfaces'),
         DeclareLaunchArgument('port', default_value='8080'),
         DeclareLaunchArgument('topic', default_value='/camera/image_raw'),
+        DeclareLaunchArgument('jpeg_quality', default_value='80',
+                              description='Stream JPEG quality 1-100; lower = '
+                                          'smaller/smoother over the internet'),
         DeclareLaunchArgument('username', default_value='tprac',
                               description='Username required to view the site'),
         DeclareLaunchArgument('password', default_value='tprac@123',
@@ -56,6 +64,7 @@ def generate_launch_description():
                 'frame_width': width,
                 'frame_height': height,
                 'fps': fps,
+                'pixel_format': pixel_format,
                 'topic': topic,
             }],
         ),
@@ -71,6 +80,7 @@ def generate_launch_description():
                 'topic': topic,
                 'username': username,
                 'password': password,
+                'jpeg_quality': jpeg_quality,
             }],
         ),
     ])
